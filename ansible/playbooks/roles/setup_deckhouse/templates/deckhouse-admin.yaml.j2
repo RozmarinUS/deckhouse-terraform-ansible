@@ -1,0 +1,21 @@
+---
+apiVersion: deckhouse.io/v1
+kind: ClusterAuthorizationRule
+metadata:
+  name: admin
+spec:
+  subjects:
+  - kind: User
+    name: admin@globalart.local
+  accessLevel: SuperAdmin
+  portForwarding: true
+---
+apiVersion: deckhouse.io/v1
+kind: User
+metadata:
+  name: admin
+spec:
+  email: admin@globalart.local
+  # admin
+  password: 'JDJ5JDEwJG4xcXVmUDJsVXFXcFNFYXhsZElJU09reXpaa2U5d3VNMXozclQuekVWWFhZUDkxUkJUaGNxCgo='
+---

@@ -1,0 +1,18 @@
+- hosts:
+    - k8s_nodes
+  gather_facts: true
+  vars:
+    hosts_file: "{{ lookup('file', 'tmp/remote_hosts') }}"
+  roles:
+    - initial_loading
+    
+- hosts:
+    - k8s_masters
+  gather_facts: true
+  vars:
+    hosts_file: "{{ lookup('file', 'tmp/remote_hosts') }}"
+  roles:
+    - setup_docker
+    - setup_kube
+    - setup_deckhouse
+

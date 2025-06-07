@@ -1,0 +1,7 @@
+export admin_username="k8sadmin"
+export ip_address_kube_ingress_1="192.168.122.31"
+export ip_address_kube_master_1="192.168.122.11"
+export ip_address_kube_worker_1="192.168.122.41"
+export ip_address_lb_1="192.168.122.21"
+export k8s_control_plane_endpoint="192.168.122.21"
+export k8s_ingress_endpoint="192.168.122.21"

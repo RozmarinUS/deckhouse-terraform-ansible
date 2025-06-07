@@ -1,0 +1,8 @@
+- hosts:
+  - k8s_lbs
+  gather_facts: true
+  vars:
+    hosts_file: "{{ lookup('file', 'tmp/remote_hosts') }}"
+  roles:
+  - initial_loading
+  - setup_lb

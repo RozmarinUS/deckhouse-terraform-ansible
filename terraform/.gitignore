@@ -1,0 +1,9 @@
+provision.auto.tfvars
+
+terraform.tfvars
+.terraform*
+terraform.tfstate*
+terraform.auto.tfvars
+virtualbox.box
+sources/*
+volumes/*

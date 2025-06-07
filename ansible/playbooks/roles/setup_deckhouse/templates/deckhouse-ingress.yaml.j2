@@ -1,0 +1,16 @@
+apiVersion: deckhouse.io/v1
+kind: IngressNginxController
+metadata:
+  name: nginx
+spec:
+  ingressClass: nginx
+  inlet: HostPort
+  hostPort:
+    httpPort: 80
+    httpsPort: 443
+  nodeSelector:
+    node-role.kubernetes.io/ingress: ""
+  tolerations:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/ingress
+    operator: Exists

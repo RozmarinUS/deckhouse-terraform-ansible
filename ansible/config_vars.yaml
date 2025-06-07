@@ -1,0 +1,9 @@
+misc_packages:
+  - "curl"
+  - "wget"
+  - "jq"
+  - "mc"
+  - "htop"
+  - "net-tools"
+  - "unzip"
+  - "iftop"

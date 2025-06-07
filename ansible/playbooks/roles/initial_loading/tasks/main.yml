@@ -1,0 +1,114 @@
+- name: Disable ipv6
+  blockinfile:
+    create: yes
+    path: /etc/default/grub.d/32-ipv6off.cfg
+    block: |
+      GRUB_CMDLINE_LINUX="ipv6.disable=1"
+    marker: "#<!-- {mark} ANSIBLE MANAGED BLOCK -->"
+    state: present
+  register: ipv6disable
+
+- name: Configure grub2
+  shell: update-grub2
+  when: ipv6disable.changed == True
+
+- name: Disable swap
+  command: swapoff -a
+  when:
+  - ansible_swaptotal_mb > 0
+
+- name: Remove swap partition
+  mount:
+    path: swap
+    state: absent
+
+- name: Ensure Swappiness is 1
+  sysctl:
+    name: vm.swappiness
+    value: "1"
+    sysctl_set: yes
+    reload: yes
+
+- name: Update apt packages
+  become: true
+  apt:
+    update_cache: yes
+
+- name: Install misc packages
+  package:
+    name: "{{ misc_packages }}"
+    state: present
+  retries: 3
+
+- name: Disable firewall
+  service:
+    name: "ufw"
+    enabled: no
+    state: stopped
+
+- name: Add the command to crontab
+  cron:
+    name: Update caches every 10 minutes
+    minute: "*/10"
+    job: "sync; echo 1 > /proc/sys/vm/drop_caches"
+
+- name: Add kernel modules
+  community.general.modprobe:
+    name: "{{ item.key }}"
+    state: present
+  with_items:
+  - { key: overlay }
+  - { key: br_netfilter }
+
+- name: Configure kernel parameters
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.conf
+    reload: yes
+  with_items:
+  - { key: net.bridge.bridge-nf-call-iptables, value: 1 }
+  - { key: net.bridge.bridge-nf-call-ip6tables, value: 0 }
+  - { key: net.ipv4.ip_forward, value: 1 }
+
+- name: Disable HostKey verification in ssh
+  blockinfile:
+    path: /etc/ssh/ssh_config
+    block: |
+      Host *
+        StrictHostKeyChecking no
+        UserKnownHostsFile=/dev/null
+    marker: "#<!-- {mark} ANSIBLE MANAGED BLOCK -->"
+    state: present
+
+- name: Add hosts to /etc/hosts
+  blockinfile:
+    path: "{{ item }}"
+    block: "{{ hosts_file }}"
+    marker: "#<!-- {mark} ANSIBLE MANAGED BLOCK -->"
+    state: present
+  loop:
+  - "/etc/hosts"
+
+- name: Disable zone_reclaim_mode
+  sysctl:
+    name: vm.zone_reclaim_mode
+    value: 0
+    state: present
+    sysctl_file: /etc/sysctl.conf
+    reload: yes
+
+- name: Ensure disable-thp service file exists
+  ansible.builtin.copy:
+    src: disable-thp.service
+    dest: /etc/systemd/system/disable-thp.service
+  register: thp
+
+- name: Ensure service to disable THP exists
+  systemd:
+    name: disable-thp
+    daemon-reload: yes
+    state: started
+    enabled: yes
+  when: thp.changed == True

@@ -1,0 +1,236 @@
+- name: Create directory for Deckhouse configuration
+  ansible.builtin.file:
+    path: /root/deckhouse
+    state: directory
+    mode: "0755"
+
+- name: Create cluster configuration for Deckhouse
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/deckhouse-config.yaml.j2"
+    dest: /root/deckhouse/config.yaml
+    mode: "0644"
+
+- name: Check if Deckhouse is already installed
+  stat:
+    path: /root/.deckhouse_installed
+  register: deckhouse_installed
+
+- name: Install Deckhouse (takes very long time)
+  shell: |
+    cd /root/deckhouse
+    sg docker -c "docker run --pull=always --rm \
+      -v /root/deckhouse/config.yaml:/config.yaml \
+      -v /root/.ssh/:/tmp/.ssh registry.deckhouse.io/deckhouse/ce/install:stable \
+      bash -c 'dhctl bootstrap \
+        --ssh-user=k8sadmin \
+        --ssh-host={{ lookup('env', 'ip_address_kube_master_1') }} \
+        --ssh-agent-private-keys=/tmp/.ssh/id_rsa \
+        --config=/config.yaml'"
+    touch /root/.deckhouse_installed
+  when: not deckhouse_installed.stat.exists
+
+- name: Copy kubeconfig
+  shell: |
+    mkdir -p /root/.kube
+    sudo cp /home/k8sadmin/.kube/config /root/.kube/config
+    sudo chown root:root /root/.kube/config
+
+- name: Wait for cluster readiness
+  shell: |
+    kubectl wait --for=condition=ready node -l node-role.kubernetes.io/master= --timeout=600s
+
+- name: Create ng configuration for Deckhouse
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/deckhouse-config-ng.yaml.j2"
+    dest: /root/deckhouse/config-ng.yaml
+    mode: "0644"
+
+- name: Apply NodeGroup configuration for Deckhouse
+  shell: |
+    kubectl apply -f /root/deckhouse/config-ng.yaml
+
+###
+- name: Generate SSH key for caps user
+  community.crypto.openssh_keypair:
+    path: /root/.ssh/caps_id
+    type: rsa
+    comment: ""
+    passphrase: ""
+    mode: '0600'
+  register: caps_ssh_key
+
+- name: Read caps private key for base64
+  slurp:
+    src: /root/.ssh/caps_id
+  register: caps_private_key_b64
+
+- name: Create SSHCredentials resource in Deckhouse cluster
+  shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: deckhouse.io/v1alpha1
+    kind: SSHCredentials
+    metadata:
+      name: caps
+    spec:
+      user: caps
+      privateSSHKey: "{{ caps_private_key_b64.content }}"
+    EOF
+  args:
+    executable: /bin/bash
+  run_once: true
+  delegate_to: "{{ groups['k8s_masters'][0] }}"
+
+- name: Read caps public key
+  slurp:
+    src: /root/.ssh/caps_id.pub
+  register: caps_public_key
+
+- name: Check if caps public key exists on controller
+  stat:
+    path: /root/.ssh/caps_id.pub
+  register: caps_pubkey_stat
+  delegate_to: "{{ groups['k8s_masters'][0] }}"
+  run_once: true
+
+- name: Read caps public key from /root/.ssh/caps_id.pub
+  slurp:
+    src: /root/.ssh/caps_id.pub
+  register: caps_public_key
+  delegate_to: "{{ groups['k8s_masters'][0] }}"
+  run_once: true
+
+- name: Create caps user on worker nodes
+  user:
+    name: caps
+    shell: /bin/bash
+    create_home: yes
+    state: present
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['k8s_nodes'] }}"
+
+- name: Add caps user to sudo group on worker nodes
+  user:
+    name: caps
+    groups: sudo
+    append: yes
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['k8s_nodes'] }}"
+
+- name: Allow caps sudo without password on worker nodes
+  lineinfile:
+    path: /etc/sudoers
+    line: 'caps ALL=(ALL) NOPASSWD: ALL'
+    validate: 'visudo -cf %s'
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['k8s_nodes'] }}"
+
+- name: Create .ssh directory for caps on worker nodes
+  file:
+    path: /home/caps/.ssh
+    state: directory
+    owner: caps
+    group: caps
+    mode: '0700'
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['k8s_nodes'] }}"
+
+- name: Add caps public key to authorized_keys on worker nodes
+  authorized_key:
+    user: caps
+    key: "{{ caps_public_key.content | b64decode }}"
+    state: present
+    path: /home/caps/.ssh/authorized_keys
+    manage_dir: no
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['k8s_nodes'] }}"
+
+- name: Set permissions on authorized_keys on worker nodes
+  file:
+    path: /home/caps/.ssh/authorized_keys
+    owner: caps
+    group: caps
+    mode: '0600'
+  delegate_to: "{{ item }}"
+  loop: "{{ groups['k8s_nodes'] }}"
+###
+
+
+- name: Create StaticInstance for workers
+  shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: deckhouse.io/v1alpha1
+    kind: StaticInstance
+    metadata:
+      name: d8cluster-worker{{ ansible_loop.index }}
+      labels:
+        role: worker
+    spec:
+      address: "{{ item }}"
+      credentialsRef:
+        kind: SSHCredentials
+        name: caps
+    EOF
+  delegate_to: "{{ groups['k8s_masters'][0] }}"
+  loop: "{{ groups['k8s_workers'] }}"
+  loop_control:
+    extended: yes
+
+- name: Create StaticInstance for ingress
+  shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: deckhouse.io/v1alpha1
+    kind: StaticInstance
+    metadata:
+      name: d8cluster-ingress{{ ansible_loop.index }}
+      labels:
+        role: ingress
+    spec:
+      address: "{{ item }}"
+      credentialsRef:
+        kind: SSHCredentials
+        name: caps
+    EOF
+  delegate_to: "{{ groups['k8s_masters'][0] }}"
+  loop: "{{ groups['k8s_ingresses'] }}"
+  loop_control:
+    extended: yes
+
+- name: Wait for StaticInstance readiness
+  shell: |
+    kubectl wait --for=condition=Ready staticinstance --all --timeout=1000s
+  delegate_to: "{{ groups['k8s_masters'][0] }}"
+
+- name: Prevent pod deployment on ingress nodes
+  shell: |
+    kubectl taint nodes -l node.deckhouse.io/group=ingress node-role.kubernetes.io/ingress=:NoSchedule --overwrite
+  delegate_to: "{{ groups['k8s_masters'][0] }}"
+  when: groups['k8s_ingresses'] | length > 0
+
+- name: Create ingress configuration for Deckhouse
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/deckhouse-ingress.yaml.j2"
+    dest: /root/deckhouse/ingress.yaml
+    mode: "0644"
+- name: Create sc configuration for Deckhouse
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/deckhouse-sc.yaml.j2"
+    dest: /root/deckhouse/sc.yaml
+    mode: "0644"
+
+- name: Apply ingress configuration for Deckhouse
+  shell: |
+    kubectl apply -f /root/deckhouse/ingress.yaml
+
+- name: Apply sc configuration for Deckhouse
+  shell: |
+    kubectl apply -f /root/deckhouse/sc.yaml
+
+- name: Create admin configuration for Deckhouse
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/deckhouse-admin.yaml.j2"
+    dest: /root/deckhouse/admin.yaml
+    mode: "0644"
+
+- name: Apply admin configuration for Deckhouse
+  shell: |
+    kubectl apply -f /root/deckhouse/admin.yaml
